@@ -69,7 +69,7 @@ public final class VoiceSessionService extends Service implements RecognitionLis
         if(service!=null&&!service.stopped){
             service.closeWake();service.followUp.rest();service.session.paused=false;
             service.localConversation=false;
-            service.nextListen=SystemClock.elapsedRealtime()+750;
+            service.nextListen=SystemClock.elapsedRealtime()+1200;
             service.voiceStatus.idle();service.notifyState("Lettura fermata · attendi il segnale, poi parla");
         }
     }
@@ -165,13 +165,26 @@ public final class VoiceSessionService extends Service implements RecognitionLis
                 if(stopped||wakeGeneration!=generation)return;
                 closeWake();if(!ReadingContinuation.available())return;showControlTranscript(text);session.paused=false;followUp.replyStarted();PetService.resumeReading();
             });}
+            public void bargedIn(String heard){main.post(()->{
+                if(stopped||wakeGeneration!=generation)return;
+                closeWake();
+                if(!getSharedPreferences("pet",0).getBoolean("voice_interrupt",true)||!PetService.speechOutputActive())return;
+                android.content.SharedPreferences health=getSharedPreferences("voice_health",0);
+                health.edit().putInt("barge_interruptions",health.getInt("barge_interruptions",0)+1).apply();
+                android.util.Log.i("SolphiviaVoice","BARGE-IN: la sento parlare, la muto e riascolto; intanto detto=\""+heard+"\"");
+                if(heard!=null&&!heard.isEmpty())showControlTranscript(heard);
+                interruptReading();
+            });}
             public void interrupted(String text){main.post(()->{
                 if(stopped||wakeGeneration!=generation)return;
                 closeWake();
                 if(!getSharedPreferences("pet",0).getBoolean("voice_interrupt",true)||!PetService.speechOutputActive())return;
                 android.content.SharedPreferences health=getSharedPreferences("voice_health",0);
                 health.edit().putInt("speech_interruptions",health.getInt("speech_interruptions",0)+1).apply();
-                showControlTranscript(text);interruptReading();
+                android.util.Log.i("SolphiviaVoice","INTERRUPT da comando riconosciuto: \""+text+"\"");
+                if(text==null||text.isEmpty())health.edit().putInt("barge_interruptions",health.getInt("barge_interruptions",0)+1).apply();
+                else showControlTranscript(text);
+                interruptReading();
             });}
             public void echo(boolean available,boolean enabled){getSharedPreferences("voice_health",0).edit().putBoolean("aec_available",available).putBoolean("aec_enabled",enabled).apply();}
             public void samples(long count){getSharedPreferences("voice_health",0).edit().putLong("local_samples",count).putInt("command_starts",commandStarts).apply();}
@@ -180,7 +193,7 @@ public final class VoiceSessionService extends Service implements RecognitionLis
     private final Runnable tick=new Runnable(){public void run(){
         if(stopped)return;
         long now=SystemClock.elapsedRealtime();
-        if((!session.paused && !localConversation && followUp.expired(now)) || (listening && now-recognitionStarted>60000L)){listenLocally();}
+        if(listening && now-recognitionStarted>60000L){listenLocally();}
         if(PetService.voiceOutputBusy()){
             if(listening){listening=false;recognitionGeneration++;recognizer.cancel();cancelTranscript();PetService.voiceListening(false);}
             if(getSharedPreferences("pet",0).getBoolean("voice_interrupt",true)&&PetService.speechOutputActive()){
@@ -199,6 +212,7 @@ public final class VoiceSessionService extends Service implements RecognitionLis
             }
             else if(!listening){
                 closeWake();listening=true;notifyState(VoiceStatusState.CAPTURE_STARTING_LABEL);recognitionStarted=now;commandStarts++;
+                android.util.Log.i("SolphiviaVoice","Ascolto comando avviato (Google)");
                 getSharedPreferences("voice_health",0).edit().putInt("command_starts",commandStarts).apply();
                 try{startCapture();}
                 catch(RuntimeException error){listenLocally();}
@@ -216,7 +230,7 @@ public final class VoiceSessionService extends Service implements RecognitionLis
         PendingIntent off=PendingIntent.getService(this,22,new Intent(this,VoiceSessionService.class).setAction(OFF),PendingIntent.FLAG_IMMUTABLE|PendingIntent.FLAG_UPDATE_CURRENT);
         Notification note=new Notification.Builder(this,"voice_session").setSmallIcon(android.R.drawable.ic_btn_speak_now)
                 .setContentTitle("Microfono Solphivia attivo").setContentText(state).setContentIntent(open).setOngoing(true)
-                .addAction(new Notification.Action.Builder(null,"Ferma la voce",interrupt).build())
+                .addAction(new Notification.Action.Builder(null,"Silenzia la voce",interrupt).build())
                 .addAction(new Notification.Action.Builder(null,"Stop dialogo",pause).build())
                 .addAction(new Notification.Action.Builder(null,"Spegni microfono",off).build()).build();
         if(Build.VERSION.SDK_INT>=29)startForeground(8,note,android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);else startForeground(8,note);
@@ -227,6 +241,7 @@ public final class VoiceSessionService extends Service implements RecognitionLis
         listening=false;voiceStatus.transcriptionStarted();PetService.voiceListening(false);nextListen=SystemClock.elapsedRealtime()+600;
         ArrayList<String> matches=bundle.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
         VoiceSessionState.Decision decision=session.accept(VoicePhrases.best(matches));
+        android.util.Log.i("SolphiviaVoice","Trascritto: \""+decision.text+"\" azione="+decision.action);
         if(decision.action==VoiceSessionState.OFF){stopSelf();return;}
         if(decision.action==VoiceSessionState.PAUSE){restForWake();return;}
         if(decision.action==VoiceSessionState.IGNORE){restForWake();return;}
@@ -252,6 +267,7 @@ public final class VoiceSessionService extends Service implements RecognitionLis
     }
     @Override public void onError(int error){
         if(stopped || !listening)return;
+        android.util.Log.i("SolphiviaVoice","Riconoscimento errore codice "+error);
         listening=false;voiceStatus.error();
         cancelTranscript();
         PetService.voiceListening(false);

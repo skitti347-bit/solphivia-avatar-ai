@@ -1,7 +1,7 @@
 package it.solphivia.mobile;
 
 final class GreetingPolicy {
-    static final String OPENING="Hola! Sono Solphivia. Puoi chiedermi qualcosa, dire apri Maps o apri WhatsApp. Per fermare la voce di’ Stop; per continuare di’ Riprendi. Di’ Comandi per l’elenco completo. Il pulsante tondo a sinistra mi spegne. Per iniziare, di’ Hola Solphivia.";
+    static final String OPENING="Hola! Sono Solphivia. Dimmi tutto: puoi aprire app, chiedere cose o semplicemente parlare. Per iniziare: Hola Solphivia.";
     private static long last=-10000L;
     static boolean claim() {
         long now=android.os.SystemClock.elapsedRealtime();

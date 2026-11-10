@@ -15,9 +15,13 @@ final class VoicePhrases {
     static String wakeRequest(String text) {
         String value=normalized(text);
         if(value.equals("o la sua figlia") || value.equals("ola sua figlia") || value.equals("hola sua figlia"))return "";
-        java.util.regex.Matcher m=java.util.regex.Pattern.compile("(?iu)^(?:hola|ola|ciao|ehi|hey)[\\s,]+(?:solphivia|solfivia)(?:[\\s,!?;:.]+(.*))?$").matcher(text==null?"":text.trim());
-        if(!m.matches())return null;
-        return m.group(1)==null?"":m.group(1);
+        // Italian ASR renders "Hola Solphivia" many ways ("ho la solphivia", "o la sul fibbia", ...).
+        java.util.regex.Matcher m=java.util.regex.Pattern.compile(
+                "^(hola|ola|ho la|o la|oh la)[ ]*(sol|so|sul)?[ ]*(phivia|fivia|livia|ivia|via|fia|fibbia|pibia|bia)((?:[ ].*)?)$").matcher(value);
+        if(m.matches())return m.group(4)==null?"":m.group(4).trim();
+        m=java.util.regex.Pattern.compile("^(ciao|ehi|hey)[ ]*(solphivia|solfivia|silvia|sofia|solvia)((?:[ ].*)?)$").matcher(value);
+        if(m.matches())return m.group(3)==null?"":m.group(3).trim();
+        return null;
     }
     static boolean greeting(String text) {
         String wake=wakeRequest(text);return wake!=null && wake.isEmpty();

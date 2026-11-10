@@ -23,6 +23,7 @@ final class ReadingContinuation {
         return text.substring(start,end);
     }
     static synchronized void pause(){if(!text.isEmpty())paused=true;}
+    static synchronized void pause(long token){if(token==generation&&!text.isEmpty())paused=true;}
     static synchronized boolean available(){return paused&&!text.isEmpty();}
     static synchronized String sourceText(String fallback){return text.isEmpty()||paused?fallback:text;}
     static synchronized String take(){if(!available())return "";paused=false;return text.substring(offset);}

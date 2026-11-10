@@ -25,8 +25,6 @@ import android.provider.Settings;
 import android.provider.OpenableColumns;
 import android.net.Uri;
 import android.database.Cursor;
-import android.speech.tts.TextToSpeech;
-import android.speech.tts.UtteranceProgressListener;
 import android.util.Base64;
 import android.text.InputType;
 import android.view.Gravity;
@@ -66,6 +64,7 @@ public class PetService extends Service {
     private static boolean internalChatVisible;
     private static PetService activeInstance;
     private boolean overlayAttached;
+    static boolean overlayVisible(){PetService service=activeInstance;return service!=null&&!service.destroyed&&service.overlayAttached;}
 
     static void setInternalChatVisible(boolean visible) {
         internalChatVisible = visible;
@@ -96,6 +95,27 @@ public class PetService extends Service {
     private void updateOverlayLayout() {
         if (overlayAttached) wm.updateViewLayout(panel, lp);
     }
+
+    /** The overlay window holds focus (and the keyboard) only while the composer is in use:
+     *  with focus released, WhatsApp and other apps keep typing normally. */
+    private void setOverlayFocusable(boolean focusable) {
+        if (lp == null || panel == null) return;
+        boolean currently = (lp.flags & WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE) == 0;
+        if (focusable == currently) return;
+        if (focusable) lp.flags &= ~WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
+        else lp.flags |= WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
+        try { updateOverlayLayout(); } catch (RuntimeException ignored) { }
+        InputMethodManager input = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+        if (input == null || composer == null) return;
+        if (focusable) input.showSoftInput(composer, 0);
+        else input.hideSoftInputFromWindow(composer.getWindowToken(), 0);
+    }
+
+    private void releaseComposerFocus() {
+        if (composer == null) return;
+        composer.clearFocus();
+        setOverlayFocusable(false);
+    }
     public static final String ACTION_ANIMATE = "it.solphivia.mobile.action.ANIMATE";
     public static final String ACTION_MODE = "it.solphivia.mobile.action.MODE";
     public static final String ACTION_VOICE_SETTINGS = "it.solphivia.mobile.action.VOICE_SETTINGS";
@@ -105,6 +125,17 @@ public class PetService extends Service {
         return MainActivity.voiceBusy() || (activeInstance!=null && (activeInstance.busy || activeInstance.typingTask!=null || activeInstance.ttsPending));
     }
     static boolean speechOutputActive(){return DeviceSpeech.outputBusy()||(activeInstance!=null&&activeInstance.ttsPending);}
+    private static volatile String lastSpokenText="";
+    static void noteLastSpoken(String text){if(text!=null&&!text.trim().isEmpty())lastSpokenText=text.trim();}
+    /** Re-speaks the most recent line from the start: the re-hook when the TTS voice drops. */
+    static boolean repeatLastSpeech(Context context){
+        if(speechOutputActive())return false;
+        String text=lastSpokenText;
+        if(text.isEmpty())return false;
+        if(activeInstance!=null&&!activeInstance.destroyed){activeInstance.typeSpeech(text);return true;}
+        new DeviceSpeech(context.getApplicationContext()).speak(text);
+        return true;
+    }
     static String currentSpokenText(){return ReadingContinuation.echoContext(DeviceSpeech.outputBusy()?DeviceSpeech.spokenText():activeInstance!=null?activeInstance.speechTarget:"");}
     static void stopReading(){
         if(speechOutputActive())ReadingContinuation.pause();
@@ -116,6 +147,12 @@ public class PetService extends Service {
         if(MainActivity.resumeReading(text))return true;
         if(activeInstance!=null&&!activeInstance.destroyed){activeInstance.typeSpeech(text);return true;}
         ReadingContinuation.begin(text);ReadingContinuation.pause();return false;
+    }
+    static boolean voiceOutputEnabled(Context context){return context.getSharedPreferences("pet",0).getBoolean("read_aloud",true);}
+    /** Pure Edge TTS on/off switch: muted means she only writes, nothing pauses or queues. */
+    static void setVoiceOutputEnabled(Context context,boolean enabled){
+        context.getSharedPreferences("pet",0).edit().putBoolean("read_aloud",enabled).apply();
+        if(!enabled)stopReading();
     }
     static EditText voiceComposer(){return activeInstance!=null && !internalChatVisible && !activeInstance.destroyed && !activeInstance.busy ? activeInstance.composer : null;}
     static void voiceListening(boolean listening) {
@@ -185,8 +222,7 @@ public class PetService extends Service {
     private int restingY;
     private boolean imeVisible;
     private String speechEndMood = "idle";
-    private TextToSpeech tts;
-    private boolean ttsInitializationComplete;
+    private boolean ttsInitializationComplete = true;
     private int ttsGeneration;
     private boolean ttsReady;
     private boolean englishAccentActive;
@@ -225,29 +261,9 @@ public class PetService extends Service {
     }
 
     private void initializeTts() {
-        if (tts != null) { tts.stop(); tts.shutdown(); }
-        ttsReady = false; ttsInitializationComplete = false;
-        int generation=++ttsGeneration;
-        tts = new TextToSpeech(this, status -> main.post(() -> {
-            if (tts == null || destroyed || generation!=ttsGeneration) return;
-            ttsInitializationComplete = true;
-            if (status != TextToSpeech.SUCCESS) { ttsReady = false; ttsPending = false; pendingUtterance = null; finishSpokenLine(); return; }
-            configureTtsVoice();
-            if (!ttsReady) { ttsPending = false; pendingUtterance = null; finishSpokenLine(); return; }
-            tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
-                @Override public void onStart(String id) { onRangeStart(id,0,0,0); }
-                @Override public void onRangeStart(String id,int start,int end,int frame){main.post(()->{Integer base=readingOffsets.get(id);if(base!=null)ReadingContinuation.progress(readingToken,base+start,base+end);});}
-                @Override public void onDone(String id) { finishTtsUtterance(id); }
-                @Override public void onError(String id) {
-                    if(id!=null && (id.equals("solphivia-"+currentUtteranceSerial) || id.startsWith("solphivia-"+currentUtteranceSerial+"-part-")))
-                        finishTtsUtterance("solphivia-"+currentUtteranceSerial);
-                }
-            });
-            if (ttsReady && pendingUtterance != null) {
-                String text = pendingUtterance; long serial = currentUtteranceSerial; pendingUtterance = null;
-                startTtsUtterance(text, serial);
-            }
-        }), getSharedPreferences("pet", 0).getString("tts_engine", "").isEmpty() ? null : getSharedPreferences("pet", 0).getString("tts_engine", ""));
+        // Edge TTS needs no engine initialization: the voice path is immediately ready.
+        ttsReady = true; ttsInitializationComplete = true;
+        englishAccentActive = getSharedPreferences("pet", 0).getBoolean("english_accent", false);
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int id) {
@@ -317,7 +333,10 @@ public class PetService extends Service {
 
     private void createOverlay() {
         int width = dp(PANEL_W), height = dp(PANEL_H);
-        int flags = WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN;
+        // Focusable only while the composer is in use: other apps keep their keyboard.
+        int flags = WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+                | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
         lp = new WindowManager.LayoutParams(width, height,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, flags, PixelFormat.TRANSLUCENT);
         lp.gravity = Gravity.TOP | Gravity.LEFT;
@@ -395,7 +414,11 @@ public class PetService extends Service {
             return false;
         });
         composer.setOnFocusChangeListener((v, focused) -> {
-            if (focused) { wakeFromRest(); resetIdleTimers(); }
+            if (focused) {
+                wakeFromRest(); resetIdleTimers();
+                composer.setTextColor(0xFF29232D);
+                setOverlayFocusable(true);
+            } else setOverlayFocusable(false);
         });
         composer.addTextChangedListener(new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
@@ -426,9 +449,6 @@ public class PetService extends Service {
         sendLp.rightMargin = dp(3);
         composerRow.addView(sendButton, sendLp);
         sendButton.setOnClickListener(v -> sendMessage());
-        composer.setOnFocusChangeListener((v, focused) -> {
-            if (focused) composer.setTextColor(0xFF29232D);
-        });
 
         speech.setText("");
         speechScroll.setOnClickListener(v -> finishTyping());
@@ -527,6 +547,7 @@ public class PetService extends Service {
     }
 
     private void openInputActivity(String action) {
+        releaseComposerFocus();
         if(ACTION_PICK_VOICE.equals(action)) {
             try {startActivity(new Intent(this,VoiceSessionActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));}
             catch(RuntimeException error){setSpeech("Non riesco ad aprire la sessione vocale.");}
@@ -543,6 +564,7 @@ public class PetService extends Service {
         String text = composer.getText().toString().trim();
         if (text.isEmpty() && pendingFiles.isEmpty()) return;
         if (text.isEmpty()) text="Puoi esaminare questi allegati e aiutarmi?";
+        releaseComposerFocus();
         submitMessage(text, new ArrayList<>(pendingFiles));
     }
 
@@ -610,13 +632,13 @@ public class PetService extends Service {
         if (attachmentUris.isEmpty() && isShutdownCommand(text)) {AppControls.close(this);return;}
 
         applyCostumeCommand(text);
-        if (!OpenAiChatClient.isConnected(this)) {
-            setSpeech("Collega ChatGPT nel browser. Puoi riaprire l’accesso dal menu ☰ → Collega ChatGPT.");
+        if (!OpenAiChatClient.isConnected(this) && !ProviderConfig.isCustomActive(this)) {
+            setSpeech("Collega un modello nel browser o ripassa l'avvio di Solphivia.");
             try {
                 startActivity(new Intent(this, MainActivity.class).setAction(MainActivity.ACTION_CONNECT_CHATGPT)
                         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
             } catch (RuntimeException error) {
-                setSpeech("Per collegare ChatGPT, apri il menu ☰ e scegli Collega ChatGPT.");
+                setSpeech("Per collegare un modello, ripassa l'avvio di Solphivia.");
             }
             return;
         }
@@ -888,6 +910,25 @@ public class PetService extends Service {
             busy = false; composer.setEnabled(true); sendButton.setEnabled(true);
             setSpeech("Non riesco a conservare gli allegati. Riprova."); return;
         }
+        if (ProviderConfig.isCustomActive(this)) {
+            CustomProviderClient.respond(this, worker, history, voice, new OpenAiChatClient.ChatCallback() {
+                @Override public void onSuccess(String reply, String mood, String motion, String mode) {
+                    main.post(() -> {
+                        if (destroyed) return;
+                        getSharedPreferences("chat", 0).edit().putString("history", history.toString()).apply();
+                        if(!voice){pendingFiles.clear();updateFilesButton();}
+                        busy = false; composer.setEnabled(true); sendButton.setEnabled(true);
+                        applyContextualMode(PetService.this, mode, pet);
+                        pendingMotion = preserveRunIntent(motion);
+                        saveMessage("assistant", reply);
+                        speechEndMood = mood == null ? "idle" : mood;
+                        typeSpeech(reply);
+                    });
+                }
+                @Override public void onError(String message) { customError(message, voice); }
+            });
+            return;
+        }
         OpenAiChatClient.respond(this, worker, history, attachments, voice, new OpenAiChatClient.ChatCallback() {
             @Override public void onSuccess(String reply, String mood, String motion, String mode) {
                 main.post(() -> {
@@ -914,10 +955,20 @@ public class PetService extends Service {
         });
     }
 
+    /** Error handling shared by the custom-provider path (same UX as the ChatGPT path). */
+    private void customError(String message, boolean voice) {
+        main.post(() -> {
+            if (destroyed) return;
+            busy = false; composer.setEnabled(true); sendButton.setEnabled(true);
+            setAnimation("concerned"); setSpeech(message);
+            resetIdleTimers();
+        });
+    }
+
     private void typeSpeech(String text) {
         if (destroyed) return;
         if (typingTask != null) { main.removeCallbacks(typingTask); typingTask = null; }
-        if (tts != null) tts.stop();
+        EdgeTts.stop();
         pendingUtterance = null;
         currentUtteranceSerial = ++utteranceSerial;
         speechTouchRevision = touchRevision;
@@ -984,7 +1035,7 @@ public class PetService extends Service {
     private void setSpeech(String text) {
         if (destroyed) return;
         if (typingTask != null) { main.removeCallbacks(typingTask); typingTask = null; }
-        if (tts != null) tts.stop();
+        EdgeTts.stop();
         pendingUtterance = null; ttsPending = false; speechTypingDone = true; speechFinalized = true;
         speechTarget = text; speech.setText(text); setAnimation("idle"); resetIdleTimers();
     }
@@ -1005,43 +1056,20 @@ public class PetService extends Service {
     private final java.util.Map<String,Integer> readingOffsets=new java.util.HashMap<>();
     private void startTtsUtterance(String text, long serial) {
         if (!getSharedPreferences("pet", 0).getBoolean("read_aloud", true)) { ttsPending = false; finishSpokenLine(); return; }
-        if (tts == null || !ttsReady || text == null) { ttsPending = false; finishSpokenLine(); return; }
-        applySystemTtsSettings();
-        String id = "solphivia-" + serial;
+        if (text == null) { ttsPending = false; finishSpokenLine(); return; }
         String spokenText = SpeechText.prepare(text,englishAccentActive,getSharedPreferences("pet",0).getBoolean("clear_italian",true));
-        java.util.List<String> chunks=SpeechText.chunks(spokenText,Math.max(100,TextToSpeech.getMaxSpeechInputLength()-1));
-        readingToken=ReadingContinuation.begin(spokenText);readingOffsets.clear();int offset=0;
-        for(int i=0;i<chunks.size();i++) {
-            String chunkId=i==chunks.size()-1?id:id+"-part-"+i;readingOffsets.put(chunkId,offset);offset+=chunks.get(i).length();
-            int result=tts.speak(chunks.get(i),i==0?TextToSpeech.QUEUE_FLUSH:TextToSpeech.QUEUE_ADD,null,i==chunks.size()-1?id:id+"-part-"+i);
-            if(result==TextToSpeech.ERROR) {tts.stop();ttsPending=false;finishSpokenLine();break;}
-        }
-        if(spokenText.isEmpty()){ttsPending=false;finishSpokenLine();}
-    }
-
-    private void applySystemTtsSettings() {
-        // Respect the user's Motorola/Android speech-rate and pitch sliders for every utterance.
-        int rate = Settings.Secure.getInt(getContentResolver(), Settings.Secure.TTS_DEFAULT_RATE, 100);
-        int pitch = Settings.Secure.getInt(getContentResolver(), Settings.Secure.TTS_DEFAULT_PITCH, 100);
-        tts.setSpeechRate(SpeechText.rate(rate,getSharedPreferences("pet",0).getInt("voice_rate_percent",100)));
-        tts.setPitch(Math.max(0.1f, pitch / 100f));
-    }
-
-    private void configureTtsVoice() {
-        boolean requestedEnglish = getSharedPreferences("pet", 0).getBoolean("english_accent", false);
-        Locale locale = requestedEnglish ? Locale.UK : Locale.ITALIAN;
-        android.speech.tts.Voice preferred=tts.getVoice();
-        int language = tts.setLanguage(locale);
-        ttsReady = language != TextToSpeech.LANG_MISSING_DATA && language != TextToSpeech.LANG_NOT_SUPPORTED;
-        englishAccentActive = requestedEnglish && ttsReady;
-        android.speech.tts.Voice best = ttsReady ? SpeechVoiceSelection.select(tts, locale, requestedEnglish, preferred) : null;
-        boolean voiceSelected = best != null && tts.setVoice(best) == TextToSpeech.SUCCESS;
-        if (requestedEnglish && !voiceSelected) {
-            // Keep the app usable when the phone has no offline English voice installed.
-            int fallback = tts.setLanguage(Locale.ITALIAN);
-            ttsReady = fallback != TextToSpeech.LANG_MISSING_DATA && fallback != TextToSpeech.LANG_NOT_SUPPORTED;
-            englishAccentActive = false;
-        }
+        if (spokenText.isEmpty()) { ttsPending = false; finishSpokenLine(); return; }
+        readingToken=ReadingContinuation.begin(spokenText);
+        lastSpokenText=spokenText;
+        String voice = getSharedPreferences("pet",0).getBoolean("english_accent",false) ? EdgeTts.ENGLISH_VOICE : EdgeTts.DEFAULT_VOICE;
+        int ratePercent = getSharedPreferences("pet",0).getInt("voice_rate_percent",100);
+        EdgeTts.speak(getApplicationContext(), spokenText, voice, ratePercent, new EdgeTts.Listener() {
+            @Override public void onDone() { finishTtsUtterance("solphivia-" + serial, false); }
+            @Override public void onError(String message) {
+                android.util.Log.i("SolphiviaVoice", "EdgeTts errore: " + message + " — riga in pausa, riaggancia con «Ripeti l'ultima frase»");
+                finishTtsUtterance("solphivia-" + serial, true);
+            }
+        });
     }
 
     private boolean handleVoiceModeCommand(String text) {
@@ -1058,27 +1086,20 @@ public class PetService extends Service {
         } else return false;
 
         getSharedPreferences("pet", 0).edit().putBoolean("english_accent", english).apply();
-        if (tts != null && ttsInitializationComplete) {
-            tts.stop();
-            configureTtsVoice();
-        }
+        englishAccentActive = english;
+        EdgeTts.stop();
         composer.setText("");
-        if (english && ttsInitializationComplete && !englishAccentActive) {
-            typeSpeech("Non trovo una voce inglese offline installata. Scaricala nelle impostazioni di sintesi vocale Android e riprova.");
-        } else if (english) {
-            typeSpeech("Accento inglese attivato. Dimmi una frase breve.");
-        } else {
-            typeSpeech("Voce italiana attivata.");
-        }
+        typeSpeech(english ? "Accento inglese attivato. Dimmi una frase breve." : "Voce italiana attivata.");
         return true;
     }
 
-    private void finishTtsUtterance(String id) {
+    private void finishTtsUtterance(String id, boolean failed) {
         main.post(() -> {
             if (destroyed) return;
             if (id == null || !id.equals("solphivia-" + currentUtteranceSerial)) return;
             ttsPending = false;
-            ReadingContinuation.complete(readingToken);
+            if (failed) ReadingContinuation.pause(readingToken); // keep the line for "Riattiva la voce"
+            else ReadingContinuation.complete(readingToken);
             finishSpokenLine();
         });
     }
@@ -1344,7 +1365,7 @@ public class PetService extends Service {
         OpenAiChatClient.cancelRequests(worker);
         worker.shutdownNow();
         weatherWorker.shutdownNow();
-        if (tts != null) { tts.stop(); tts.shutdown(); tts = null; }
+        EdgeTts.stop();
         if (pet != null) pet.pause();
         if (panel != null) { if (overlayAttached) { try { wm.removeView(panel); } catch (IllegalArgumentException ignored) { } } overlayAttached = false; panel = null; pet = null; }
         stopForeground(true);

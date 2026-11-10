@@ -2,6 +2,7 @@ package it.solphivia.mobile;
 
 import android.content.Context;
 import android.media.*;
+import android.os.SystemClock;
 import org.vosk.Model;
 import org.vosk.Recognizer;
 import org.vosk.LibVosk;
@@ -18,6 +19,7 @@ final class LocalWakeDetector implements AutoCloseable {
         void failed(String reason);
         void samples(long count);
         default void interrupted(String text) {}
+        default void bargedIn(String heard) {}
         default void resumed(String text) {}
         default void partialCommand(String text) {}
         default void command(String text) {}
@@ -96,6 +98,9 @@ final class LocalWakeDetector implements AutoCloseable {
         Model model=null;Recognizer decoder=null,verifier=null;AudioRecord input=null;
         boolean detected=false,interrupted=false,resumed=false,command=false;String failure=null,controlText="";
         android.media.audiofx.AcousticEchoCanceler echo=null;
+        BargeInPolicy barge=new BargeInPolicy(false);boolean aecEnabled=false;
+        boolean bargeAllowed=context.getSharedPreferences("pet",0).getBoolean("barge_in",true);
+        long bargeGraceUntil=0;boolean barged=false;int bargePeak=0,bargeFrames=0;
         try{
             if(!running)return;
             String learned=context.getSharedPreferences("pet",0).getString("wake_italian_phrases","");
@@ -110,15 +115,16 @@ final class LocalWakeDetector implements AutoCloseable {
             boolean available=android.media.audiofx.AcousticEchoCanceler.isAvailable(),enabled=false;
             if(available)try{echo=android.media.audiofx.AcousticEchoCanceler.create(input.getAudioSessionId());if(echo!=null)enabled=echo.setEnabled(true)==android.media.audiofx.AudioEffect.SUCCESS&&echo.getEnabled();}catch(RuntimeException ignored){}
             listener.echo(available,enabled);
+            aecEnabled=enabled;barge=new BargeInPolicy(enabled);
             input.startRecording();short[] pcm=new short[1600];long total=0;int utterance=0;boolean wasSuspended=false;
             while(running){
                 int n=input.read(pcm,0,pcm.length);if(!running)break;if(n<0)throw new IOException("Microphone read failed");if(n==0)continue;
                 total+=n;utterance+=n;
                 if(total%32000<n)listener.samples(total);
                 Mode nextMode=requestedMode;
-                if(nextMode!=mode){Recognizer previous=decoder;decoder=null;previous.close();if(verifier!=null){verifier.close();verifier=null;}verifiedFinal="";mode=nextMode;if(mode==Mode.INTERRUPT || mode==Mode.WAKE && ReadingContinuation.available())verifier=new Recognizer(model,16000);decoder=decoder(model,mode,learned);interruptPolicy.reset();utterance=0;}
+                if(nextMode!=mode){Recognizer previous=decoder;decoder=null;previous.close();if(verifier!=null){verifier.close();verifier=null;}verifiedFinal="";mode=nextMode;if(mode==Mode.INTERRUPT || mode==Mode.WAKE && ReadingContinuation.available())verifier=new Recognizer(model,16000);decoder=decoder(model,mode,learned);interruptPolicy.reset();utterance=0;barge.reset();bargeGraceUntil=SystemClock.elapsedRealtime()+800;}
                 boolean paused=suspended;
-                if(paused!=wasSuspended){decoder.reset();if(verifier!=null)verifier.reset();verifiedFinal="";utterance=0;wasSuspended=paused;}
+                if(paused!=wasSuspended){decoder.reset();if(verifier!=null)verifier.reset();verifiedFinal="";utterance=0;barge.reset();wasSuspended=paused;}
                 if(paused){utterance=0;continue;}
                 if(verifier!=null&&verifier.acceptWaveForm(pcm,n))verifiedFinal=(verifiedFinal+" "+text(verifier.getResult())).trim();
                 boolean finalResult=decoder.acceptWaveForm(pcm,n);
@@ -129,6 +135,18 @@ final class LocalWakeDetector implements AutoCloseable {
                         listener.partialCommand(phrase);
                     }
                 }else if(mode==Mode.INTERRUPT){
+                    if(bargeAllowed&&SystemClock.elapsedRealtime()>=bargeGraceUntil){
+                        long sum=0;for(int i=0;i<n;i++){int sample=pcm[i];sum+=(long)sample*sample;}
+                        int rms=(int)Math.sqrt(sum/(double)n);
+                        if(rms>bargePeak)bargePeak=rms;
+                        if(++bargeFrames>=30){final int peak=bargePeak;bargePeak=0;bargeFrames=0;
+                            context.getSharedPreferences("voice_health",0).edit().putInt("barge_rms_peak",peak).apply();}
+                        if(barge.frame(rms)){
+                            barged=true;
+                            String heard=(verifiedFinal+" "+(verifier==null?"":partial(verifier.getPartialResult()))).trim();
+                            controlText=heard;break;
+                        }
+                    }
                     String phrase=finalResult?text(decoder.getResult()):partial(decoder.getPartialResult());
                     String verified=verifier==null?"":(verifiedFinal+" "+(finalResult?text(verifier.getFinalResult()):partial(verifier.getPartialResult()))).trim();
                     String source=ReadingContinuation.sourceText(spoken);
@@ -153,7 +171,7 @@ final class LocalWakeDetector implements AutoCloseable {
             if(decoder!=null)decoder.close();
             if(verifier!=null)verifier.close();
         }
-        if(running){if(command)listener.command(controlText);else if(resumed)listener.resumed(controlText);else if(interrupted)listener.interrupted(controlText);else if(detected)listener.wake();else if(failure!=null)listener.failed(failure);}
+        if(running){if(command)listener.command(controlText);else if(resumed)listener.resumed(controlText);else if(barged)listener.bargedIn(controlText);else if(interrupted)listener.interrupted(controlText);else if(detected)listener.wake();else if(failure!=null)listener.failed(failure);}
         running=false;
     }
     public void close(){running=false;AudioRecord input=recorder;if(input!=null)try{input.stop();}catch(RuntimeException ignored){}}

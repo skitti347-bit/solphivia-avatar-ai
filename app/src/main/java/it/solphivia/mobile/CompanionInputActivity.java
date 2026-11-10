@@ -1,7 +1,7 @@
 package it.solphivia.mobile;
 
 import android.app.Activity;
-import android.app.AlertDialog;
+import android.app.Dialog;
 import android.content.Intent;
 import android.content.ClipData;
 import android.content.pm.PackageManager;
@@ -14,6 +14,8 @@ import android.os.Handler;
 import android.os.Looper;
 import android.speech.RecognizerIntent;
 import android.widget.EditText;
+import android.widget.LinearLayout;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import java.util.ArrayList;
@@ -30,7 +32,6 @@ import org.json.JSONObject;
 /** Small relay activity for Android's speech recognizer and document picker. */
 public class CompanionInputActivity extends Activity {
     static final String ACTION_VOICE = "it.solphivia.mobile.action.VOICE_INPUT";
-    static final String ACTION_HOME_ICON = "it.solphivia.mobile.action.HOME_ICON";
     static final String ACTION_SETTINGS = "it.solphivia.mobile.action.SETTINGS";
     static final String ACTION_FILES = "it.solphivia.mobile.action.PICK_FILES";
     static final String ACTION_ATTACHMENTS = "it.solphivia.mobile.action.ATTACHMENTS";
@@ -53,35 +54,110 @@ public class CompanionInputActivity extends Activity {
         externalRequestPending = state != null && state.getBoolean("external_request_pending", false);
         if (externalRequestPending) return;
         String action = getIntent() == null ? null : getIntent().getAction();
-        if(ACTION_HOME_ICON.equals(action)){showHomeIconHelp();return;}
         if (ACTION_SETTINGS.equals(action)) {
-            new AlertDialog.Builder(this).setTitle("Solphivia")
-                    .setItems(new String[]{"Memoria e Memory Vault", "Voce italiana e pronuncia", "Prova animazioni", "Microfono e sessione", "Aggiungi icona sulla Home", "Ferma la voce", "Riprendi la voce", "Collega ChatGPT"}, (d,w) -> {
-                        if(w==7){startActivity(new Intent(this,MainActivity.class).setAction(MainActivity.ACTION_CONNECT_CHATGPT));finish();return;}
-                        if(w==6){PetService.resumeReading();finish();return;}
-                        if(w==5){VoiceSessionService.interruptReading();finish();return;}
-                        if(w==4){showHomeIconHelp();return;}
-                        startActivity(new Intent(this,w==0?MemoryActivity.class:w==1?VoiceSettingsActivity.class:w==2?AnimationPreviewActivity.class:VoiceSessionActivity.class)); finish();
-                    }).setOnCancelListener(d -> finish()).show();
+            showCyberMenu();
         }
         else if (ACTION_WEATHER_SETUP.equals(action)) chooseWeatherLocation();
         else if (ACTION_VOICE.equals(action)) openVoiceInput();
         else openFilePicker();
     }
 
-    private void showHomeIconHelp(){
-        new AlertDialog.Builder(this).setTitle("Icona unica Solphivia IA").setMessage(AppControls.addHomeIcon(this))
-            .setPositiveButton("Vai alla Home",(d,w)->{startActivity(new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME));finish();})
-            .setNegativeButton("Chiudi",(d,w)->finish()).setOnCancelListener(d->finish()).show();
+    /** HyperOS blocks plain startActivity from a background-attached dialog; the sanctioned
+     *  path on Android 14+ is a PendingIntent whose CREATOR background-start mode is allowed. */
+    private void launchFromBackground(Class<?> cls, String extraKey) {
+        Intent intent = new Intent(this, cls).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        if (extraKey != null) intent.putExtra(extraKey, true);
+        android.app.ActivityOptions options = android.app.ActivityOptions.makeBasic();
+        if (android.os.Build.VERSION.SDK_INT >= 34)
+            options.setPendingIntentCreatorBackgroundActivityStartMode(android.app.ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED);
+        try {
+            android.app.PendingIntent pending = android.app.PendingIntent.getActivity(this, cls.getName().hashCode(), intent,
+                    android.app.PendingIntent.FLAG_IMMUTABLE | android.app.PendingIntent.FLAG_UPDATE_CURRENT, options.toBundle());
+            pending.send(this, 0, null, new android.app.PendingIntent.OnFinished() {
+                @Override public void onSendFinished(android.app.PendingIntent p, Intent sent, int code, String resultData, Bundle resultExtras) { finish(); }
+            }, null);
+        }
+        catch (android.app.PendingIntent.CanceledException | RuntimeException error) {
+            try { startActivity(intent); } catch (RuntimeException ignored) { }
+            finish();
+        }
+    }
+
+    private void showCyberMenu() {
+        boolean overlayUp = PetService.overlayVisible();
+        boolean voiceOn = PetService.voiceOutputEnabled(this);
+        final String[] items = {"Memoria e Memory Vault", "Prova animazioni",
+                overlayUp ? "Apri Chat" : "Live Avatar",
+                voiceOn ? "Silenzia la voce" : "Riattiva la voce",
+                "Ripeti l'ultima frase", "Cambia modello"};
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setBackgroundColor(0xFF0A0E1C);
+        int pad = Math.round(14 * getResources().getDisplayMetrics().density);
+        box.setPadding(pad, pad, pad, pad);
+        TextView title = new TextView(this);
+        title.setText("Solphivia");
+        title.setTextSize(20); title.setTypeface(null, android.graphics.Typeface.BOLD);
+        title.setTextColor(0xFFEAF2FF);
+        title.setShadowLayer(pad, 0, 0, 0xFF00E5FF);
+        box.addView(title);
+        for (int i = 0; i < items.length; i++) {
+            final int which = i;
+            TextView row = new TextView(this);
+            row.setText(items[i]);
+            row.setTextSize(15);
+            row.setTextColor(0xFFEAF2FF);
+            android.graphics.drawable.GradientDrawable background = new android.graphics.drawable.GradientDrawable();
+            background.setColor(0xFF131A2E);
+            background.setCornerRadius(pad);
+            background.setStroke(Math.max(1, Math.round(getResources().getDisplayMetrics().density)), 0xFF2A3554);
+            row.setBackground(background);
+            row.setPadding(pad, pad / 2, pad, pad / 2);
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
+            params.setMargins(0, pad / 2, 0, 0);
+            row.setLayoutParams(params);
+            row.setOnClickListener(v -> {
+                if (which == 5) { launchFromBackground(OnboardingActivity.class, "change_model"); return; }
+                if (which == 4) {
+                    if (!PetService.repeatLastSpeech(this))
+                        Toast.makeText(this, "Non c'è una frase recente da ripetere.", Toast.LENGTH_SHORT).show();
+                    finish(); return;
+                }
+                if (which == 3) {
+                    boolean on = PetService.voiceOutputEnabled(this);
+                    PetService.setVoiceOutputEnabled(this, !on);
+                    Toast.makeText(this, on ? "Voce silenziata: ora risponde solo per iscritto." : "Voce di Edge riattivata.", Toast.LENGTH_SHORT).show();
+                    finish(); return;
+                }
+                if (which == 2) {
+                    if (overlayUp) {
+                        launchFromBackground(MainActivity.class, "stay_open");
+                    } else {
+                        getSharedPreferences("pet", 0).edit().putBoolean("overlay_off", false).apply();
+                        if (android.os.Build.VERSION.SDK_INT >= 26)
+                            startForegroundService(new Intent(this, PetService.class).setAction(PetService.ACTION_GREET));
+                        else startService(new Intent(this, PetService.class).setAction(PetService.ACTION_GREET));
+                    }
+                    finish(); return;
+                }
+                startActivity(new Intent(this, which == 0 ? MemoryActivity.class : AnimationPreviewActivity.class));
+                finish();
+            });
+            box.addView(row);
+        }
+        android.app.Dialog dialog = new android.app.Dialog(this, android.R.style.Theme_DeviceDefault_Dialog_NoActionBar);
+        dialog.setContentView(box);
+        dialog.setOnCancelListener(d -> finish());
+        dialog.show();
     }
 
     private void chooseWeatherLocation() {
-        new AlertDialog.Builder(this).setTitle("Solphivia Meteorina")
-                .setMessage("Come vuoi indicare la posizione per il meteo? Le coordinate saranno inviate a Open-Meteo per ottenere le previsioni e conservate sul telefono per gli aggiornamenti.")
-                .setPositiveButton("Usa GPS", (dialog, which) -> useGps())
-                .setNeutralButton("Scrivo una località", (dialog, which) -> askCity())
-                .setNegativeButton("Annulla", (dialog, which) -> finish())
-                .setOnCancelListener(dialog -> finish()).show();
+        new CyberDialogs.Builder(this, "Solphivia Meteorina",
+                "Come vuoi indicare la posizione per il meteo? Le coordinate saranno inviate a Open-Meteo per ottenere le previsioni e conservate sul telefono per gli aggiornamenti.")
+                .button("Usa GPS", 0, d -> { d.dismiss(); useGps(); })
+                .button("Scrivo una località", 1, d -> { d.dismiss(); askCity(); })
+                .button("Annulla", 1, Dialog::dismiss)
+                .cancelFinishes().show();
     }
 
     private void useGps() {
@@ -99,10 +175,11 @@ public class CompanionInputActivity extends Activity {
         boolean granted = false;
         for (int result : grants) if (result == PackageManager.PERMISSION_GRANTED) granted = true;
         if (granted) findLocation();
-        else new AlertDialog.Builder(this).setTitle("Posizione non autorizzata")
-                .setMessage("Puoi comunque scegliere una città senza attivare il GPS.")
-                .setPositiveButton("Scegli città", (d, w) -> askCity())
-                .setNegativeButton("Annulla", (d, w) -> finish()).show();
+        else new CyberDialogs.Builder(this, "Posizione non autorizzata",
+                "Puoi comunque scegliere una città senza attivare il GPS.")
+                .button("Scegli città", 0, d -> { d.dismiss(); askCity(); })
+                .button("Annulla", 1, Dialog::dismiss)
+                .cancelFinishes().show();
     }
 
     private void findLocation() {
@@ -145,10 +222,11 @@ public class CompanionInputActivity extends Activity {
         if (!locating) return;
         locating = false;
         removeLocationUpdates();
-        new AlertDialog.Builder(this).setTitle("Posizione non disponibile")
-                .setMessage("Non ho ricevuto una posizione GPS. Puoi inserire la città a mano.")
-                .setPositiveButton("Scegli città", (d, w) -> askCity())
-                .setNegativeButton("Annulla", (d, w) -> finish()).show();
+        new CyberDialogs.Builder(this, "Posizione non disponibile",
+                "Non ho ricevuto una posizione GPS. Puoi inserire la città a mano.")
+                .button("Scegli città", 0, d -> { d.dismiss(); askCity(); })
+                .button("Annulla", 1, Dialog::dismiss)
+                .cancelFinishes().show();
     };
 
     private void sendWeatherLocation(Location location) {
@@ -171,16 +249,14 @@ public class CompanionInputActivity extends Activity {
 
     private void askCity() {
         if (!active()) return;
-        EditText input = new EditText(this);
-        input.setSingleLine(true);
-        input.setHint("es. Torre a Mare, Bari");
         String saved = getSharedPreferences("weather", 0).getString("place", "Torre a Mare, Bari");
-        input.setText(saved); input.setSelectAllOnFocus(true);
-        new AlertDialog.Builder(this).setTitle("Scegli la località")
-                .setMessage("Inserisci una città o una località. Non userò il GPS; le coordinate della località saranno inviate a Open-Meteo per le previsioni.")
-                .setView(input)
-                .setPositiveButton("Usa questa località", (d, w) -> geocode(input.getText().toString().trim()))
-                .setNegativeButton("Annulla", (d, w) -> finish()).show();
+        EditText input = CyberDialogs.styledInput(this, "es. Torre a Mare, Bari", saved);
+        new CyberDialogs.Builder(this, "Scegli la località",
+                "Inserisci una città o una località. Non userò il GPS; le coordinate della località saranno inviate a Open-Meteo per le previsioni.")
+                .customView(input)
+                .button("Usa questa località", 0, d -> { d.dismiss(); geocode(input.getText().toString().trim()); })
+                .button("Annulla", 1, Dialog::dismiss)
+                .cancelFinishes().show();
     }
 
     private void geocode(String query) {

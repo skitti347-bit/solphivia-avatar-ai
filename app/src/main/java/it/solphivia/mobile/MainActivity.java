@@ -56,6 +56,7 @@ public class MainActivity extends Activity {
     private PetView inlinePet;
     private BubbleTail speechTail;
     private boolean authBrowser;
+    private boolean stayOpen;
     private boolean busy;
     private boolean activityPaused;
     private boolean sendAfterConnect;
@@ -133,19 +134,25 @@ public class MainActivity extends Activity {
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
+        stayOpen = getIntent() != null && getIntent().getBooleanExtra("stay_open", false);
         AppControls.refreshHomeIcons(this);
         VoicePreferences.initialize(this);
         inlineVoice=new DeviceSpeech(this);
-        getWindow().setStatusBarColor(Color.rgb(250, 247, 252));
-        getWindow().setNavigationBarColor(Color.rgb(250, 247, 252));
+        getWindow().setStatusBarColor(0xFF0A0E1C);
+        getWindow().setNavigationBarColor(0xFF0A0E1C);
         if (Build.VERSION.SDK_INT >= 30) {
             getWindow().setDecorFitsSystemWindows(false);
             getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING);
         } else {
             getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         }
-        getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
+        getWindow().getDecorView().setSystemUiVisibility(0);
         authBrowser = OpenAiChatClient.isAuthorizing();
+        if (!getSharedPreferences(ProviderConfig.PREFS, 0).getBoolean(ProviderConfig.ONBOARDING_DONE, false) && !authBrowser) {
+            startActivity(new Intent(this, OnboardingActivity.class));
+            finish();
+            return;
+        }
         buildScreen();
         restoreLatestSpeech();
     }
@@ -154,7 +161,7 @@ public class MainActivity extends Activity {
         LinearLayout page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
         page.setPadding(dp(14), dp(7), dp(14), dp(8));
-        page.setBackgroundColor(Color.rgb(250, 247, 252));
+        page.setBackgroundColor(0xFF0A0E1C);
         page.setOnApplyWindowInsetsListener((view, insets) -> {
             int top, bottom;
             if (Build.VERSION.SDK_INT >= 30) {
@@ -172,16 +179,18 @@ public class MainActivity extends Activity {
         header.setGravity(Gravity.CENTER_VERTICAL);
         TextView title = new TextView(this);
         title.setText("Solphivia"); title.setTextSize(23); title.setTypeface(null, Typeface.BOLD);
-        title.setTextColor(Color.rgb(54, 37, 66));
+        title.setTextColor(0xFFEAF2FF);
+        title.setShadowLayer(dp(14), 0, 0, 0xFF00E5FF);
         header.addView(title, new LinearLayout.LayoutParams(0, dp(42), 1));
         connectButton = new Button(this);
         connectButton.setTextSize(11);
+        connectButton.setVisibility(View.GONE);
         connectButton.setOnClickListener(v -> connectChatGPT());
         header.addView(connectButton, new LinearLayout.LayoutParams(-2, dp(40)));
         page.addView(header, new LinearLayout.LayoutParams(-1, dp(42)));
 
         status = new TextView(this);
-        status.setTextSize(12); status.setTextColor(Color.rgb(112, 96, 120));
+        status.setTextSize(12); status.setTextColor(0xFF8FA3C8);
         status.setGravity(Gravity.CENTER_VERTICAL);
         status.setPadding(dp(2), 0, 0, 0);
         page.addView(status, new LinearLayout.LayoutParams(-1, dp(25)));
@@ -195,10 +204,11 @@ public class MainActivity extends Activity {
         Button controls=new Button(this);controls.setText("Menu · impostazioni");
         controls.setOnClickListener(v->startActivity(new Intent(this,CompanionInputActivity.class).setAction(CompanionInputActivity.ACTION_SETTINGS)));
         settingsRow.addView(controls,new LinearLayout.LayoutParams(0,-2,1));
+        settingsRow.setVisibility(View.GONE);
         page.addView(settingsRow);
 
         stage = new FrameLayout(this);
-        stage.setBackground(roundRect(Color.WHITE, dp(24), 0xFFE9DDEC));
+        stage.setBackground(roundRect(0xFF131A2E, dp(24), 0xFF2A3554));
         stage.setClipToPadding(true);
 
         inlinePet = new PetView(this);
@@ -218,10 +228,10 @@ public class MainActivity extends Activity {
         speechScroll = new ScrollView(this);
         speechScroll.setFillViewport(false);
         speechScroll.setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
-        speechScroll.setBackground(roundRect(0xFFF8F5F9, dp(20), 0xFFEDE4EF));
+        speechScroll.setBackground(roundRect(0xFF131A2E, dp(20), 0xFF2A3554));
         speechScroll.setElevation(dp(4));
         speech = new TextView(this);
-        speech.setTextSize(15); speech.setTextColor(0xFF302736);
+        speech.setTextSize(15); speech.setTextColor(0xFFEAF2FF);
         speech.setLineSpacing(dp(2), 1f);
         speech.setPadding(dp(11), dp(8), dp(11), dp(8));
         speechScroll.addView(speech, new ScrollView.LayoutParams(-1, -2));
@@ -240,20 +250,24 @@ public class MainActivity extends Activity {
         LinearLayout composerRow = new LinearLayout(this);
         composerRow.setGravity(Gravity.CENTER_VERTICAL);
         filesButton = new Button(this); filesButton.setText("+"); filesButton.setContentDescription("Aggiungi file dal telefono");
+        filesButton.setTextColor(0xFF00E5FF); filesButton.setTextSize(19);
+        filesButton.setBackground(roundRect(0xFF131A2E, dp(14), 0xFF2A3554));
         filesButton.setMinWidth(0); filesButton.setMinimumWidth(0); filesButton.setPadding(0,0,0,0);
         composerRow.addView(filesButton,new LinearLayout.LayoutParams(dp(44),dp(48)));
         filesButton.setOnClickListener(v -> openInlineInput(CompanionInputActivity.ACTION_FILES));
         filesButton.setOnLongClickListener(v -> {pendingFiles.clear(); filesButton.setText("+");status.setText("Allegati rimossi.");return true;});
         Button micButton=new Button(this); micButton.setText("🎙"); micButton.setContentDescription("Detta un messaggio");
+        micButton.setTextColor(0xFF00E5FF);
+        micButton.setBackground(roundRect(0xFF131A2E, dp(14), 0xFF2A3554));
         micButton.setMinWidth(0);micButton.setMinimumWidth(0);micButton.setPadding(0,0,0,0);
         composerRow.addView(micButton,new LinearLayout.LayoutParams(dp(44),dp(48)));
         micButton.setOnClickListener(v -> openInlineInput(CompanionInputActivity.ACTION_VOICE));
         composer = new EditText(this);
         composer.setTextSize(16); composer.setSingleLine(true); composer.setMaxLines(1);
         composer.setHint(getPackageName().endsWith(".verification") ? "Scrivi a Solphivia · PROVA…" : "Scrivi a Solphivia…");
-        composer.setTextColor(0xFF29232D); composer.setHintTextColor(0xFF766D7B);
+        composer.setTextColor(0xFFEAF2FF); composer.setHintTextColor(0xFF5A6B92);
         composer.setPadding(dp(14), dp(9), dp(12), dp(9));
-        composer.setBackground(roundRect(0xFFFCFEFF, dp(20), 0xFF9BE9F1));
+        composer.setBackground(roundRect(0xFF0F1424, dp(20), 0xFF2A3554));
         composer.setImeOptions(EditorInfo.IME_ACTION_SEND | EditorInfo.IME_FLAG_NO_EXTRACT_UI);
         composer.addTextChangedListener(new android.text.TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
@@ -268,8 +282,8 @@ public class MainActivity extends Activity {
         });
         composerRow.addView(composer, new LinearLayout.LayoutParams(0, dp(52), 1));
         sendButton = new Button(this); sendButton.setText("➜"); sendButton.setTextSize(21);
-        sendButton.setTextColor(0xFF155B66); sendButton.setContentDescription("Invia messaggio");
-        sendButton.setBackground(roundRect(0xFFDDFBFF, dp(22), 0xFF9BE9F1));
+        sendButton.setTextColor(0xFF0A0E1C); sendButton.setTypeface(null, Typeface.BOLD); sendButton.setContentDescription("Invia messaggio");
+        sendButton.setBackground(roundRect(0xFFFF2EC8, dp(22), 0xFFFF2EC8));
         sendButton.setOnClickListener(v -> sendMessage());
         LinearLayout.LayoutParams sendParams = new LinearLayout.LayoutParams(-2, dp(50));
         sendParams.leftMargin = dp(5);
@@ -476,7 +490,7 @@ public class MainActivity extends Activity {
             inlinePet.setClassicCyborgSuit(cyborg);
             getSharedPreferences("pet", 0).edit().putBoolean("cyborg_suit", cyborg).apply();
         }
-        if (!OpenAiChatClient.isConnected(this)) { sendAfterConnect=true; connectChatGPT(); return; }
+        if (!OpenAiChatClient.isConnected(this) && !ProviderConfig.isCustomActive(this)) { sendAfterConnect=true; connectChatGPT(); return; }
         cancelIdleTimers();
         if(!voice)composer.setText("");
         ((InputMethodManager)getSystemService(Context.INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(composer.getWindowToken(), 0);
@@ -487,13 +501,15 @@ public class MainActivity extends Activity {
         final String requestText=text;
         try {history.put(new JSONObject().put("role","user").put("content",requestText));}catch(Exception e){throw new IllegalStateException(e);}
         while(history.length()>16)history.remove(0);
-        OpenAiChatClient.respond(this, worker, history, new JSONArray(), voice, new OpenAiChatClient.ChatCallback() {
+        OpenAiChatClient.ChatCallback replyCallback = new OpenAiChatClient.ChatCallback() {
             @Override public void onSuccess(String reply, String animation, String motion, String mode) {
                 runOnUiThread(() -> {
                     if (isFinishing() || isDestroyed()) return;
                     getSharedPreferences("chat",0).edit().putString("history",history.toString()).apply();
                     busy = false; sendButton.setEnabled(true); composer.setEnabled(true);
-                    status.setText("Chat privata · collegata a ChatGPT");
+                    status.setText(ProviderConfig.isCustomActive(MainActivity.this)
+                            ? "Chat privata · collegata a " + ProviderConfig.label(MainActivity.this)
+                            : "Chat privata · collegata a ChatGPT");
                     PetService.applyContextualMode(MainActivity.this, mode, inlinePet);
                     speak(reply, animation, preserveRunIntent(motion), true);
                     composer.requestFocus();
@@ -513,7 +529,12 @@ public class MainActivity extends Activity {
                     }
                 });
             }
-        });
+        };
+        if (ProviderConfig.isCustomActive(this)) {
+            CustomProviderClient.respond(this, worker, history, voice, replyCallback);
+        } else {
+            OpenAiChatClient.respond(this, worker, history, new JSONArray(), voice, replyCallback);
+        }
     }
 
     private void openInlineInput(String action) {
@@ -534,7 +555,8 @@ public class MainActivity extends Activity {
         status.setText("Bozza pronta: controlla il messaggio e premi ➜. Tieni premuto + per rimuovere gli allegati.");
     }
     private void sendInlineFiles(String text) {
-        if(!OpenAiChatClient.isConnected(this)){status.setText("Collega ChatGPT prima di inviare gli allegati.");return;}
+        if (!OpenAiChatClient.isConnected(this) && !ProviderConfig.isCustomActive(this)) { status.setText("Collega un modello prima di inviare gli allegati."); return; }
+        if (ProviderConfig.isCustomActive(this)) { status.setText("Gli allegati sono per ora solo su ChatGPT."); return; }
         busy=true;sendButton.setEnabled(false);composer.setEnabled(false);
         java.util.ArrayList<String> selected=new java.util.ArrayList<>(pendingFiles);
         worker.execute(() -> {
@@ -698,11 +720,14 @@ public class MainActivity extends Activity {
 
     private void refreshConnectionState() {
         boolean connected = OpenAiChatClient.isConnected(this);
-        connectButton.setText(connected ? "ChatGPT ✓" : "Collega ChatGPT");
+        boolean custom = !connected && ProviderConfig.isCustomActive(this);
+        connectButton.setText(connected ? "ChatGPT ✓" : custom ? ProviderConfig.label(this) + " ✓" : "Collega ChatGPT");
         boolean authPending = authBrowser || OpenAiChatClient.isAuthorizing();
         connectButton.setEnabled(!authPending);
         composer.setEnabled(!busy && !authPending); sendButton.setEnabled(!busy && !authPending);
-        status.setText(connected ? (Settings.canDrawOverlays(this) ? "Chat privata · collegata a ChatGPT" : "Chat collegata · tocca per attivare l’avatar flottante") :
+        String connectedLabel = custom ? "Chat privata · collegata a " + ProviderConfig.label(this)
+                : "Chat privata · collegata a ChatGPT";
+        status.setText(connected || custom ? (Settings.canDrawOverlays(this) ? connectedLabel : "Chat collegata · tocca per attivare l’avatar flottante") :
                 (Settings.canDrawOverlays(this) ? "Scrivi per iniziare la chat" : "Chat pronta · avatar flottante disattivato"));
         status.setOnClickListener(v -> {
             if (!Settings.canDrawOverlays(this)) startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + getPackageName())));
@@ -761,6 +786,7 @@ public class MainActivity extends Activity {
     @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
+        stayOpen = intent != null && intent.getBooleanExtra("stay_open", false);
         if (handleConnectionIntent()) return;
         voiceWakeAttempted=false;
         authBrowser = OpenAiChatClient.isAuthorizing();
@@ -780,8 +806,10 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** Once setup is complete, the launcher returns directly to Home with the floating chat. */
+    /** Once setup is complete, the launcher returns directly to Home with the floating chat.
+     *  Skipped when the chat was opened on purpose ("Apri Chat") so it stays visible. */
     private boolean startHomeOverlayIfReady() {
+        if (stayOpen) return false;
         if(authBrowser || OpenAiChatClient.isAuthorizing())return false;
         if(voiceWakePermissionPending||backgroundNoticePending)return false;
         // Android must grant the microphone foreground service while this activity is visible.
@@ -851,7 +879,7 @@ public class MainActivity extends Activity {
         private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Path triangle = new Path();
         private boolean pointLeft;
-        BubbleTail(Context context) { super(context); fill.setColor(0xFFF8F5F9); }
+        BubbleTail(Context context) { super(context); fill.setColor(0xFF131A2E); }
         void setPointLeft(boolean value) { pointLeft = value; invalidate(); }
         @Override protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
